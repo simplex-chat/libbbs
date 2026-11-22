@@ -38,8 +38,8 @@ bbs_proof_gen_init (
 	bbs_proof_gen_ctx *ctx,
 	const bbs_ciphersuite   *cipher_suite,
 	const bbs_public_key  pk,
-	uint64_t              num_messages,
-	uint64_t              num_disclosed,
+	size_t                num_messages,
+	size_t                num_disclosed,
 	bbs_bn_prf            prf,
 	void                 *prf_cookie
 	);
@@ -60,7 +60,7 @@ bbs_proof_gen_finalize (
 	size_t                header_len,
 	const void        *presentation_header,
 	size_t                presentation_header_len,
-	uint64_t              num_messages,
+	size_t                num_messages,
 	size_t                num_disclosed
 	);
 // END declarations of bbs.c
