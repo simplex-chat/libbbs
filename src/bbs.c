@@ -9,6 +9,9 @@
  * App Store rejection (ITMS-90338), so it must not appear in the binary. When
  * built with -DBBS_CRYPTO_CC (as the iOS/macOS build does, mirroring SQLCipher's
  * SQLCIPHER_CRYPTO_CC), we use SecRandomCopyBytes from Security.framework.
+ * On Linux, Android included, we call getrandom(2) through syscall(2) and read
+ * /dev/urandom where the kernel lacks it: Android's libc exports getentropy
+ * only from API level 28.
  * Otherwise we use getentropy(3), available in libc on modern POSIX systems
  * (declared here in case <unistd.h> is unavailable or relocates it). */
 #ifdef BBS_CRYPTO_CC
@@ -16,6 +19,50 @@
 #include <Security/SecBase.h>
 static inline int bbs_get_random(void *buffer, size_t length) {
 	return SecRandomCopyBytes(kSecRandomDefault, length, buffer) == errSecSuccess ? 0 : -1;
+}
+#elif defined(__linux__)
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static int bbs_get_urandom(uint8_t *buffer, size_t length) {
+	int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+	if (fd < 0) return -1;
+	while (length > 0) {
+		ssize_t n = read(fd, buffer, length);
+		if (n > 0) {
+			buffer += n;
+			length -= (size_t) n;
+		} else if (n < 0 && errno == EINTR) {
+			continue;
+		} else {
+			close(fd);
+			return -1;
+		}
+	}
+	close(fd);
+	return 0;
+}
+static inline int bbs_get_random(void *buffer, size_t length) {
+	uint8_t *p = buffer;
+#ifdef SYS_getrandom
+	while (length > 0) {
+		long n = syscall(SYS_getrandom, p, length, 0);
+		if (n > 0) {
+			p += n;
+			length -= (size_t) n;
+		} else if (n < 0 && errno == EINTR) {
+			continue;
+		} else if (n < 0 && errno == ENOSYS) {
+			return bbs_get_urandom(p, length);
+		} else {
+			return -1;
+		}
+	}
+	return 0;
+#else
+	return bbs_get_urandom(p, length);
+#endif
 }
 #else
 int getentropy(void *buffer, size_t length);
