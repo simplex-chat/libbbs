@@ -1,38 +1,258 @@
 name: Build and Run Tests
 
 on:
+  pull_request:
   push:
-    branches: [ main ]
+    branches: [ main, simplex ]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+env:
+  BLST_COMMIT: db3defd0d501cc2bb1cdd59cb955d1a421821441
+  SIMPLEXMQ_COMMIT: 47deec9fe508b960d44c1213ad29ce07edc5bfab
 
-      - name: Install prerequisites
+jobs:
+  cmake:
+    name: CMake build, Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_C_FLAGS=-D__BLST_PORTABLE__
+          cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  fixtures:
+    name: Test fixtures
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh ci/fixtures.sh fixtures
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures/fixtures_*.c
+
+  linux:
+    name: Linux ${{ matrix.arch }} glibc
+    needs: fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Build and test as simplexmq builds
+        run: sh ci/build.sh
+
+  getrandom-enosys:
+    name: Linux x86_64 glibc, getrandom unavailable
+    needs: fixtures
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Install strace
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake
+          sudo apt-get install -y strace
+      - name: Build as simplexmq builds
+        run: sh ci/build.sh
+        env:
+          RUN: 0
+      - name: Test with getrandom answering ENOSYS
+        run: sh ci/enosys.sh
 
-      - name: Build
-        # This converts to html via pandoc, makes links clickable and adds a
-        # redirect as the first page.
+  musl:
+    name: Linux ${{ matrix.arch }} musl
+    needs: fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            image: alpine:3.20
+            platform: linux/amd64
+          - arch: i686
+            image: i386/alpine:3.20
+            platform: linux/386
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Build and test as simplexmq builds
+        run: >
+          docker run --rm --platform ${{ matrix.platform }} -e BLST_COMMIT -v "$PWD:/w" -w /w ${{ matrix.image }}
+          sh -c "apk add --no-cache build-base git && sh ci/build.sh"
+
+  android:
+    name: Android ${{ matrix.abi }} API 26
+    needs: fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android26
+          - abi: armeabi-v7a
+            triple: armv7a-linux-androideabi26
+          - abi: x86_64
+            triple: x86_64-linux-android26
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Set the NDK toolchain
         run: |
-          set -e
-          mkdir build && cd build
-          cmake ..
-          make
-
-      - name: Test
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CC=$bin/${{ matrix.triple }}-clang" >> "$GITHUB_ENV"
+          echo "AR=$bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "NM=$bin/llvm-nm" >> "$GITHUB_ENV"
+      - name: Build the library as simplexmq builds
+        run: sh ci/build.sh
+        env:
+          LIB_ONLY: 1
+          SHARED: .so
+      - name: Check that getentropy is not an undefined symbol
         run: |
-          set -e
-          cd build
-          pwd
-          make test
+          "$NM" -D --undefined-only out/libbbs.so > out/undefined.txt
+          if grep -qw getentropy out/undefined.txt; then
+            echo "libbbs.so references getentropy, absent from the libc of API level 26"
+            exit 1
+          fi
+      - name: Build the tests
+        run: sh ci/build.sh
+        env:
+          RUN: 0
+      - name: Enable KVM
+        if: matrix.abi == 'x86_64'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run the tests on an API 26 emulator
+        if: matrix.abi == 'x86_64'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 26
+          arch: x86_64
+          target: default
+          script: sh ci/android-run.sh
 
+  macos:
+    name: macOS ${{ matrix.arch }}${{ matrix.crypto_cc && ', BBS_CRYPTO_CC' || '' }}
+    needs: fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            crypto_cc: true
+          - arch: x86_64
+            runner: macos-15-intel
+            crypto_cc: true
+          - arch: arm64
+            runner: macos-latest
+            crypto_cc: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Build and test as simplexmq builds
+        run: sh ci/build.sh
+        env:
+          CC: clang
+          DEFS: ${{ matrix.crypto_cc && '-DBBS_CRYPTO_CC' || '' }}
+          LIBS: ${{ matrix.crypto_cc && '-framework Security' || '' }}
+
+  ios:
+    name: iOS ${{ matrix.sdk }} ${{ matrix.arch }}, BBS_CRYPTO_CC
+    needs: fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: iphoneos
+            arch: arm64
+            target: arm64-apple-ios15.0
+          - sdk: iphonesimulator
+            arch: arm64
+            target: arm64-apple-ios15.0-simulator
+          - sdk: iphonesimulator
+            arch: x86_64
+            target: x86_64-apple-ios15.0-simulator
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Build the library and tests as simplexmq builds
+        run: sh ci/build.sh
+        env:
+          CC: xcrun -sdk ${{ matrix.sdk }} clang -target ${{ matrix.target }}
+          AR: xcrun -sdk ${{ matrix.sdk }} ar
+          DEFS: -DBBS_CRYPTO_CC
+          LIBS: -framework Security
+          RUN: 0
+      - name: Check that getentropy is not referenced
+        run: |
+          nm -u out/libbbs.a > out/undefined.txt
+          if grep -qw _getentropy out/undefined.txt; then
+            echo "libbbs.a references getentropy, a non-public symbol on iOS"
+            exit 1
+          fi
+
+  windows:
+    name: Windows x86_64 MinGW
+    needs: fixtures
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: git mingw-w64-x86_64-gcc
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: fixtures
+      - name: Get the getentropy shim of simplexmq
+        run: curl -fsSL -o out-getentropy_win.c "https://raw.githubusercontent.com/simplex-chat/simplexmq/$SIMPLEXMQ_COMMIT/cbits/getentropy_win.c"
+      - name: Build and test as simplexmq builds
+        run: sh ci/build.sh
+        env:
+          CC: gcc
+          EXE: .exe
+          EXTRA_SOURCES: out-getentropy_win.c
+          LIBS: -lbcrypt
