@@ -3,10 +3,26 @@
 #include "bbs_util.h"
 #include <stdbool.h>
 
-/* This function should be availale in <unistd.h> on POSIX systems. We declare
- * it here to allow simple linking when <unistd.h> is not available, or for when
- * _some_ vendor decides to place it in another header. */
+/* Randomness provider. Returns 0 on success, nonzero on failure.
+ *
+ * On Apple platforms the symbol _getentropy is treated as non-public and causes
+ * App Store rejection (ITMS-90338), so it must not appear in the binary. When
+ * built with -DBBS_CRYPTO_CC (as the iOS/macOS build does, mirroring SQLCipher's
+ * SQLCIPHER_CRYPTO_CC), we use SecRandomCopyBytes from Security.framework.
+ * Otherwise we use getentropy(3), available in libc on modern POSIX systems
+ * (declared here in case <unistd.h> is unavailable or relocates it). */
+#ifdef BBS_CRYPTO_CC
+#include <Security/SecRandom.h>
+#include <Security/SecBase.h>
+static inline int bbs_get_random(void *buffer, size_t length) {
+	return SecRandomCopyBytes(kSecRandomDefault, length, buffer) == errSecSuccess ? 0 : -1;
+}
+#else
 int getentropy(void *buffer, size_t length);
+static inline int bbs_get_random(void *buffer, size_t length) {
+	return getentropy(buffer, length);
+}
+#endif
 
 /* Helper */
 static inline void ep_mult_scalar(blst_p1 *out, const blst_p1 *p, const blst_scalar *s, size_t _ignored) {
@@ -24,7 +40,7 @@ bbs_keygen_full (
 	static uint8_t seed[32];
 
 	// Gather randomness
-	if(getentropy(seed, 32)) return BBS_ERROR;
+	if(bbs_get_random(seed, 32)) return BBS_ERROR;
 	// Generate the secret key (cannot fail)
 	bbs_keygen (cipher_suite, sk, seed, 32, 0, 0, 0, 0);
 	// Generate the public key (unlikely to fail)
@@ -779,7 +795,7 @@ bbs_proof_gen_v (
 	// intermediate derivations. Currently, we derive new values via
 	// hash_to_scalar, but we might want to exchange that for
 	// something faster later on.
-	if(getentropy(seed, 32)) return BBS_ERROR;
+	if(bbs_get_random(seed, 32)) return BBS_ERROR;
 
 	va_start (ap, n);
 	bbs_proof_gen_init(&ctx, cipher_suite, pk, n, disclosed_indexes_len, bbs_proof_prf, seed);
@@ -822,7 +838,7 @@ bbs_proof_gen (
 	// intermediate derivations. Currently, we derive new values via
 	// hash_to_scalar, but we might want to exchange that for
 	// something faster later on.
-	if(getentropy(seed, 32)) return BBS_ERROR;
+	if(bbs_get_random(seed, 32)) return BBS_ERROR;
 
 	bbs_proof_gen_init(&ctx, cipher_suite, pk, n, disclosed_indexes_len, bbs_proof_prf, seed);
 	for(size_t i=0; i< n; i++) {
