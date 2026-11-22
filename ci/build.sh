@@ -50,8 +50,15 @@ for test in test/bbs_fix_*.c test/bbs_e2e_*.c; do
 done
 
 if [ "$RUN" = 1 ]; then
+	failed=""
 	for test in "$OUT"/bin/*; do
 		echo "$test"
-		"$test"
+		if ! "$test"; then
+			failed="$failed $test"
+		fi
 	done
+	if [ -n "$failed" ]; then
+		echo "failed:$failed"
+		exit 1
+	fi
 fi

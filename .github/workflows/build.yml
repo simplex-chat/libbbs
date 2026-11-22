@@ -92,9 +92,14 @@ jobs:
           - arch: i686
             image: i386/alpine:3.20
             platform: linux/386
+          - arch: armv7
+            image: arm32v7/alpine:3.20
+            platform: linux/arm/v7
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch == 'armv7'
       - uses: actions/download-artifact@v4
         with:
           name: fixtures
