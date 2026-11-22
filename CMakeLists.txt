@@ -26,13 +26,12 @@ ExternalProject_Add(
 	blst
 	PREFIX blst
 	GIT_REPOSITORY https://github.com/supranational/blst.git
-	GIT_TAG master
-	GIT_SHALLOW true
+	GIT_TAG db3defd0d501cc2bb1cdd59cb955d1a421821441
 	#URL https://github.com/supranational/blst/archive/refs/tags/v0.3.15.tar.gz
 	#DOWNLOAD_EXTRACT_TIMESTAMP false
 	CONFIGURE_COMMAND ""
 	BUILD_IN_SOURCE true
-	BUILD_COMMAND "./build.sh"
+	BUILD_COMMAND ./build.sh -D__BLST_PORTABLE__
 	INSTALL_COMMAND ""
 	)
 
