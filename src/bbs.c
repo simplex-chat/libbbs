@@ -532,7 +532,7 @@ bbs_proof_verify_update (
 		bn_write_bbs (scalar_buffer, &ctx->acc.msg_scalar);
 
 		// Hash i and msg_scalar into the challenge
-		size_t be_buffer = htobe64 (ctx->disclosed_ctr + ctx->undisclosed_ctr);
+		uint64_t be_buffer = htobe64 (ctx->disclosed_ctr + ctx->undisclosed_ctr);
 		hash_to_scalar_update (s, &ctx->ch_ctx, &be_buffer, 8);
 		hash_to_scalar_update (s, &ctx->ch_ctx, scalar_buffer, BBS_SCALAR_LEN);
 		ctx->disclosed_ctr++;
